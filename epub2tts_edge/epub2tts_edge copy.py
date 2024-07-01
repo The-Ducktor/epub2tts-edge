@@ -6,8 +6,7 @@ import re
 import subprocess
 import time
 import warnings
-
-from alive_progress import alive_bar
+from tqdm import tqdm
 
 
 from bs4 import BeautifulSoup
@@ -225,70 +224,57 @@ def append_silence(tempfile, duration=1200):
     combined.export(tempfile, format="flac")
 
 
-# Assuming the existence of `parallel_edgespeak`, `append_silence`, and `sort_key` functions
-
-
 def read_book(book_contents, speaker):
     segments = []
     for i, chapter in enumerate(book_contents, start=1):
-        files = []
         partname = f"part{i}.flac"
         if os.path.isfile(partname):
             print(f"{partname} exists, skipping to next chapter")
             segments.append(partname)
-        else:
-            print(f"Chapter: {chapter['title']}\n")
-            if chapter["title"] == "":
-                chapter["title"] = "blank"
-            asyncio.run(
-                parallel_edgespeak([chapter["title"]], [speaker], ["sntnc0.mp3"])
-            )
-            append_silence("sntnc0.mp3", 1200)
+            continue
 
-            # Use alive_bar to track progress of paragraphs processing
-            with alive_bar(
-                len(chapter["paragraphs"]), title=f"Processing chapter {i}"
-            ) as bar:
-                for pindex, paragraph in enumerate(chapter["paragraphs"]):
-                    ptemp = f"pgraphs{pindex}.flac"
-                    if os.path.isfile(ptemp):
-                        print(f"{ptemp} exists, skipping to next paragraph")
-                    else:
-                        sentences = sent_tokenize(paragraph)
-                        filenames = [
-                            "sntnc" + str(z + 1) + ".mp3" for z in range(len(sentences))
-                        ]
-                        speakers = [speaker] * len(sentences)
-                        asyncio.run(parallel_edgespeak(sentences, speakers, filenames))
-                        append_silence(filenames[-1], 1200)
-                        # combine sentences in paragraph
-                        sorted_files = sorted(filenames, key=sort_key)
-                        if os.path.exists("sntnc0.mp3"):
-                            sorted_files.insert(0, "sntnc0.mp3")
-                        combined = AudioSegment.empty()
-                        for file in sorted_files:
-                            combined += AudioSegment.from_file(file)
-                        combined.export(ptemp, format="flac")
-                        for file in sorted_files:
-                            os.remove(file)
-                    files.append(ptemp)
-                    bar()  # Update progress bar
+        print(f"Chapter: {chapter['title']}\n")
+        if chapter["title"] == "":
+            chapter["title"] = "blank"
+        asyncio.run(parallel_edgespeak([chapter["title"]], [speaker], ["sntnc0.mp3"]))
+        append_silence("sntnc0.mp3", 1200)
 
-            # Update progress bar for combining paragraphs into chapter
-            with alive_bar(
-                len(files), title=f"Combining paragraphs into chapter {i}"
-            ) as bar:
-                # combine paragraphs into chapter
-                append_silence(files[-1], 2800)
-                combined = AudioSegment.empty()
-                for file in files:
-                    combined += AudioSegment.from_file(file)
-                    bar()  # Update progress bar
-                combined.export(partname, format="flac")
-                for file in files:
-                    os.remove(file)
+        files = []
+        for pindex, paragraph in enumerate(
+            tqdm(chapter["paragraphs"], desc=f"Processing chapter {i}", unit="pg")
+        ):
+            ptemp = f"pgraphs{pindex}.flac"
+            if os.path.isfile(ptemp):
+                print(f"{ptemp} exists, skipping to next paragraph")
+                files.append(ptemp)
+                continue
 
-            segments.append(partname)
+            sentences = sent_tokenize(paragraph)
+            filenames = [f"sntnc{z+1}.mp3" for z in range(len(sentences))]
+            speakers = [speaker] * len(sentences)
+            asyncio.run(parallel_edgespeak(sentences, speakers, filenames))
+            append_silence(filenames[-1], 1200)
+
+            sorted_files = sorted(filenames, key=sort_key)
+            if os.path.exists("sntnc0.mp3"):
+                sorted_files.insert(0, "sntnc0.mp3")
+            combined = AudioSegment.empty()
+            for file in sorted_files:
+                combined += AudioSegment.from_file(file)
+            combined.export(ptemp, format="flac")
+            for file in sorted_files:
+                os.remove(file)
+            files.append(ptemp)
+
+        append_silence(files[-1], 2800)
+        combined = AudioSegment.empty()
+        for file in files:
+            combined += AudioSegment.from_file(file)
+        combined.export(partname, format="flac")
+        for file in files:
+            os.remove(file)
+        segments.append(partname)
+
     return segments
 
 
@@ -390,7 +376,7 @@ def run_edgespeak(sentence, speaker, filename):
                 f"Attempt {speakattempt + 1}/3 failed with '{sentence}' in run_edgespeak with error: {e}"
             )
             # wait a few seconds in case its a transient network issue
-            time.sleep(3 ** speakattempt)
+            time.sleep(3)
     else:
         print(f"Giving up on sentence '{sentence}' after 3 attempts in run_edgespeak.")
         exit()
